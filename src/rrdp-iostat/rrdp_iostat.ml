@@ -482,6 +482,21 @@ module Blktap3_stats_wrapper = struct
 
 end
 
+type dss_value =
+  { name : string
+  ; description : string
+  ; value : Rrd.ds_value_type
+  ; ty : Rrd.ds_type
+  ; units : string
+  ; min : float
+  }
+
+let make_dss ~owner ~values =
+  let dss_with_value {name; description; value; ty; units; min} =
+    owner, Ds.ds_make ~default:true ~name ~description ~value ~ty ~units ()
+  in
+  List.map dss_with_value values
+
 module Stats_value = struct
   type t =
     {
@@ -591,57 +606,70 @@ module Stats_value = struct
         }) empty values
 
   let make_ds ~owner ~name ~key_format (value : t) =
-    let ds_make = Ds.ds_make ~default:true in
-    [
-      owner, ds_make ~name:(key_format "read")
-        ~description:("Reads from device " ^ name ^ ", in B/s")
-        ~value:(Rrd.VT_Int64 value.rd_bytes)
-        ~ty:Rrd.Derive ~units:"B/s" ~min:0.0 ();
-      owner, ds_make ~name:(key_format "write")
-        ~description:("Writes from device " ^ name ^ ", in B/s")
-        ~value:(Rrd.VT_Int64 value.wr_bytes)
-        ~ty:Rrd.Derive ~units:"B/s" ~min:0.0 ();
-      owner, ds_make ~name:(key_format "read_latency")
-        ~description:("Read latency from device " ^ name ^ ", in microseconds")
-        ~value:(Rrd.VT_Int64 value.rd_avg_usecs)
-        ~ty:Rrd.Gauge ~units:"μs" ~min:0.0 ();
-      owner, ds_make ~name:(key_format "write_latency")
-        ~description:("Write latency from device " ^ name ^ ", in microseconds")
-        ~value:(Rrd.VT_Int64 value.wr_avg_usecs)
-        ~ty:Rrd.Gauge ~units:"μs" ~min:0.0 ();
-      owner, ds_make ~name:(key_format "io_throughput_read")
-        ~description:("Data read from the " ^ name ^ ", in MiB/s")
-        ~value:(Rrd.VT_Float value.io_throughput_read_mb)
-        ~ty:Rrd.Absolute ~units:"MiB/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "io_throughput_write")
-        ~description:("Data written to the " ^ name ^ ", in MiB/s")
-        ~value:(Rrd.VT_Float value.io_throughput_write_mb)
-        ~ty:Rrd.Absolute ~units:"MiB/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "io_throughput_total")
-        ~description:("All " ^ name ^ " I/O, in MiB/s")
-        ~value:(Rrd.VT_Float (value.io_throughput_read_mb +. value.io_throughput_write_mb))
-        ~ty:Rrd.Absolute ~units:"MiB/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "iops_read")
-        ~description:"Read requests per second"
-        ~value:(Rrd.VT_Int64 value.iops_read)
-        ~ty:Rrd.Absolute ~units:"requests/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "iops_write")
-        ~description:"Write requests per second"
-        ~value:(Rrd.VT_Int64 value.iops_write)
-        ~ty:Rrd.Absolute ~units:"requests/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "iops_total")
-        ~description:"I/O Requests per second"
-        ~value:(Rrd.VT_Int64 (Int64.add value.iops_read value.iops_write))
-        ~ty:Rrd.Absolute ~units:"requests/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "iowait")
-        ~description:"Total I/O wait time (all requests) per second"
-        ~value:(Rrd.VT_Float value.iowait)
-        ~ty:Rrd.Absolute ~units:"s/s" ~min:0. ();
-      owner, ds_make ~name:(key_format "inflight")
-        ~description:"Number of I/O requests currently in flight"
-        ~value:(Rrd.VT_Int64 value.inflight)
-        ~ty:Rrd.Gauge ~units:"requests" ~min:0. ();
-    ]
+    let fmt = Printf.sprintf in
+    let values =
+    [ { name = key_format "read"
+      ; description = fmt "Reads from device %s, in B/s" name
+      ; value = Rrd.VT_Int64 value.rd_bytes; ty = Rrd.Derive
+      ; units = "B/s"; min = 0.0
+      }
+    ; { name = key_format "write"
+      ; description = fmt "Writes from device %s, in B/s" name
+      ; value = Rrd.VT_Int64 value.wr_bytes; ty = Rrd.Derive
+      ; units = "B/s"; min = 0.0
+      }
+    ; { name = key_format "read_latency"
+      ; description = fmt "Read latency from device %s, in microseconds" name
+      ; value = Rrd.VT_Int64 value.rd_avg_usecs; ty = Rrd.Gauge
+      ; units = "μs"; min = 0.0
+      }
+    ; { name = key_format "write_latency"
+      ; description = fmt "Write latency from device %s, in microseconds" name
+      ; value = Rrd.VT_Int64 value.wr_avg_usecs; ty = Rrd.Gauge
+      ; units = "μs"; min = 0.0
+      }
+    ; { name = key_format "io_throughput_read"
+      ; description = fmt "Data read from the %s, in MiB/s" name
+      ; value = Rrd.VT_Float value.io_throughput_read_mb; ty = Rrd.Absolute
+      ; units = "MiB/s"; min = 0.
+      }
+    ; { name = key_format "io_throughput_write"
+      ; description = fmt "Data written to the %s, in MiB/s" name
+      ; value = Rrd.VT_Float value.io_throughput_write_mb; ty = Rrd.Absolute
+      ; units = "MiB/s"; min = 0.
+      }
+    ; { name = key_format "io_throughput_total"
+      ; description = fmt "All %s I/O, in MiB/s" name
+      ; value = Rrd.VT_Float (value.io_throughput_read_mb +. value.io_throughput_write_mb)
+      ; ty = Rrd.Absolute; units = "MiB/s"; min = 0.
+      }
+    ; { name = key_format "iops_read"
+      ; description = "Read requests per second"
+      ; value = Rrd.VT_Int64 value.iops_read; ty = Rrd.Absolute
+      ; units = "requests/s"; min = 0.
+      }
+    ; { name = key_format "iops_write"
+      ; description = "Write requests per second"
+      ; value = Rrd.VT_Int64 value.iops_write; ty = Rrd.Absolute
+      ; units = "requests/s"; min = 0.
+      }
+    ; { name = key_format "iops_total"
+      ; description = "I/O Requests per second"
+      ; value = Rrd.VT_Int64 (Int64.add value.iops_read value.iops_write)
+      ; ty = Rrd.Absolute; units = "requests/s"; min = 0.
+      }
+    ; { name = key_format "iowait"
+      ; description = "Total I/O wait time (all requests) per second"
+      ; value = Rrd.VT_Float value.iowait; ty = Rrd.Absolute
+      ; units = "s/s"; min = 0.
+      }
+    ; { name = key_format "inflight"
+      ; description = "Number of I/O requests currently in flight"
+      ; value = Rrd.VT_Int64 value.inflight; ty = Rrd.Gauge
+      ; units = "requests"; min = 0.
+      }
+    ] in
+    make_dss ~owner ~values
 end
 
 module Iostats_value = struct
@@ -689,17 +717,15 @@ module Iostats_value = struct
     List.fold_left max empty values
 
   let [@warning "-27"] make_ds  ~owner ~name ~key_format (value : t) =
-    let ds_make = Ds.ds_make ~default:true in
-    [
-      owner, ds_make ~name:(key_format "latency")
-        ~description:"Average I/O latency"
-        ~value:(Rrd.VT_Float value.latency)
-        ~ty:Rrd.Gauge ~units:"μs" ~min:0. ();
-      owner, ds_make ~name:(key_format "avgqu_sz")
-        ~description:"Average I/O queue size"
-        ~value:(Rrd.VT_Float value.avgqu_sz)
-        ~ty:Rrd.Gauge ~units:"requests" ~min:0. ();
-    ]
+    let values =
+    [ { name = (key_format "latency"); description = "Average I/O latency"
+      ; value = Rrd.VT_Float value.latency; ty = Rrd.Gauge; units = "μs"; min = 0.
+      }
+    ; { name = (key_format "avgqu_sz"); description = "Average I/O queue size"
+      ; value = Rrd.VT_Float value.avgqu_sz; ty = Rrd.Gauge; units = "requests"; min = 0.
+      }
+    ] in
+    make_dss ~owner ~values
 end
 
 let list_all_assocs key xs = List.map snd (List.filter (fun (k,_) -> k = key) xs)
@@ -791,15 +817,12 @@ let gen_metrics () =
         if (Int64.logand (get_stats_flags stats) Blktap3_stats.flag_low_mem_mode) = Blktap3_stats.flag_low_mem_mode then acc ++ 1L else acc
       )0L domid_devid_to_stats_blktap3
     in
-    let ds_make = Ds.ds_make ~default:true in
-    [
-      [
-        Rrd.Host, ds_make ~name:"Tapdisks_in_low_memory_mode"
-          ~description:("Number of tapdisks in low memory mode")
-          ~value:(Rrd.VT_Int64 count)
-          ~ty:Rrd.Absolute ~units:"count" ~min:0. ();
-      ];
-    ] in
+    [[ Rrd.Host, Ds.ds_make ~name:"Tapdisks_in_low_memory_mode"
+        ~description:("Number of tapdisks in low memory mode")
+        ~value:(Rrd.VT_Int64 count)
+        ~ty:Rrd.Absolute ~units:"count" ~min:0. ~default:true ()
+    ]] in
+
   (* Lookup the VM(s) for this VDI and associate with the RRD for those VM(s) *)
   let data_sources_vm_iostats = List.flatten (
       List.map (fun ((_sr, vdi), iostats_value) ->
