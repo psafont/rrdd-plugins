@@ -131,42 +131,39 @@ module Iostat = struct
     (* A map from device names to the parsed values *)
     let dev_values_map : ((string, t) Hashtbl.t) = Hashtbl.create 20 in
 
-    (* Keep track of how many results headers we've seen so far *)
-    let parsing_section = ref 0 in
     let process_line str =
       let res = Utils.cut str in
-      (* Keep values from the second set of outputs *)
-      if !parsing_section = 2 then begin
-        match res with
+      let () = match res with
         | dev :: vals ->
           (try
              Hashtbl.replace dev_values_map dev (List.map float_of_string vals)
            with _ -> (* ignore unparseable lines *) ())
         | _ -> ()
-      end;
-      (* See if we have reached the header for a new section *)
-      begin
-        try
-          if List.hd res = "Device:" then incr parsing_section
-        with _ -> ()
-      end;
+      in
       None
     in
 
     (* Make a list of the names of the devices we are interested in *)
-    let dev_str = String.concat " " (List.map (fun dev -> Printf.sprintf "-d %s" dev) devs) in
-    let cmdstring = Printf.sprintf "/usr/bin/iostat -x %s 1 2" dev_str in (* 2 iterations; 1 second between them *)
+    let dev_str = String.concat " " devs in
+    (* Example output:
+      # iostat -ydx sda loop1 loop0 1 1
+      Linux 4.4.0+2 (localhost) 	11/12/19 	_x86_64_	(8 CPU)
+
+      Device:         rrqm/s   wrqm/s     r/s     w/s    rkB/s    wkB/s avgrq-sz avgqu-sz   await r_await w_await  svctm  %util
+      loop0             0.00     0.00    0.00    0.00     0.00     0.00     0.00     0.00    0.00    0.00    0.00   0.00   0.00
+      loop1             0.00     0.00    0.00    0.00     0.00     0.00     0.00     0.00    0.00    0.00    0.00   0.00   0.00
+      sda               0.00    12.00    0.00    2.00     0.00    56.00    56.00     0.02   12.00    0.00   12.00  12.00   2.40
+    *)
+    let cmdstring = Printf.sprintf "/usr/bin/iostat -ydx %s 1 1" dev_str in (* display 1 device report after a second *)
 
     (* Iterate through each line and populate dev_values_map *)
-    let _ = Utils.exec_cmd (module Process.D) ~cmdstring ~f:process_line in
+    let _ : 'a option list = Utils.exec_cmd (module Process.D) ~cmdstring ~f:process_line in
 
     (* Now read the values out of dev_values_map for devices for which we have data *)
     Listext.List.filter_map (fun dev ->
-        if not (Hashtbl.mem dev_values_map dev)
-        then None
-        else
-          let values = Hashtbl.find dev_values_map dev in
-          Some (dev, values)
+        match Hashtbl.find_opt dev_values_map dev with
+        | None -> None
+        | Some values -> Some (dev, values)
       ) devs
 end
 
@@ -201,17 +198,28 @@ module Stat = struct
   type t = int64 list (* /sys/block/tdX/stats @ /sys/block/tdX/inflight @ [read bytes; write bytes] *)
 
   let get_unsafe_dev (dev : string) : t =
-    let hw_sector_size = Int64.of_string (Unixext.file_lines_fold (fun acc line -> acc ^ line) "" ("/sys/block/" ^ dev ^ "/queue/hw_sector_size")) in
-    let stats = List.map Int64.of_string (List.hd (Unixext.file_lines_fold (fun acc line -> (Utils.cut line)::acc) [] ("/sys/block/" ^ dev ^ "/stat"))) in
-    let inflight_stats = List.hd (Unixext.file_lines_fold (fun acc line -> List.map Int64.of_string (Utils.cut line)::acc) [] ("/sys/block/" ^ dev ^ "/inflight")) in
+    let ( / ) = Filename.concat in
+    let path_root = "/sys/block" / dev in
+    let get_stats_from filename =
+      Unixext.string_of_file (path_root / filename) |> Utils.cut |> List.map Int64.of_string
+    in
+    let hw_sector_size =
+      Unixext.string_of_file (path_root / "queue/hw_sector_size") |> Int64.of_string
+    in
+    let stats = get_stats_from "stat" in
+    let inflight_stats = get_stats_from "inflight" in
     let sectors_to_bytes = Int64.mul hw_sector_size in
     let read_bytes = sectors_to_bytes (List.nth stats 2) in
     let write_bytes = sectors_to_bytes (List.nth stats 6) in
-    let res = (Xapi_stdext_std.Listext.List.take 11 stats) @ inflight_stats @ [read_bytes; write_bytes] in
-    begin
-      assert (List.length res = 15);
-      res
-    end
+    let res = List.concat
+      [
+        (Listext.List.take 11 stats)
+      ; inflight_stats
+      ; [read_bytes; write_bytes]
+      ]
+    in
+    assert (List.length res = 15);
+    res
 
   let get_unsafe (devs : string list) : (string * t) list =
     List.map (fun dev ->
@@ -352,8 +360,9 @@ let exec_tap_ctl () =
   minor_to_sr_and_vdi
 
 let minor_of_tdX_unsafe tdX =
-  int_of_string (Unixext.file_lines_fold (fun acc l -> acc ^ (List.nth (Xstringext.String.split ':' l) 1))
-                   "" ("/sys/block/" ^ tdX ^ "/dev"))
+  let ( / ) = Filename.concat in
+  Unixext.string_of_file ("/sys/block" / tdX / "dev")
+  |> fun dev -> Scanf.sscanf dev "%d:%d" (fun _major minor -> minor)
 
 let get_tdXs vdi_info_list =
   let tdXs = List.fold_left
@@ -373,14 +382,13 @@ let get_sr_vdi_to_stats_fun ~f () =
 let get_sr_vdi_to_stats = get_sr_vdi_to_stats_fun ~f:Stat.get_unsafe
 let get_sr_vdi_to_iostats = get_sr_vdi_to_stats_fun ~f:Iostat.get_unsafe
 
-let sr_to_sth s_v_to_i =
-  let fold_fun acc ((s,_v),sth) =
-    try
-      let cur = List.assoc s acc in
-      Listext.List.replace_assoc s (sth::cur) acc
-    with Not_found -> (s, [sth])::acc
+let drop_vdis sr_vdi_to_stats =
+  let fold_fun acc ((sr, _vdi), stats) =
+    match List.assoc_opt sr acc with
+    | None -> (sr, [stats]) :: acc
+    | Some cur -> Listext.List.replace_assoc sr (stats :: cur) acc
   in
-  List.fold_left fold_fun [] s_v_to_i
+  List.fold_left fold_fun [] sr_vdi_to_stats
 
 module Blktap3_stats_wrapper = struct
   let shm_devices_dir = "/dev/shm"
@@ -773,7 +781,7 @@ let gen_metrics () =
     List.map (fun ((_sr, vdi) as sr_vdi, iostats) ->
         let last_iostats = match !sr_vdi_to_last_iostats_values with
           | None -> None
-          | Some s -> if Hashtbl.mem s sr_vdi then Some (Hashtbl.find s sr_vdi) else None in
+          | Some s -> Hashtbl.find_opt s sr_vdi in
         let stats_blktap3, last_stats_blktap3 = get_stats_blktap3_by_vdi vdi in
         (sr_vdi, Iostats_value.make iostats last_iostats stats_blktap3 last_stats_blktap3)
       ) sr_vdi_to_iostats in
@@ -781,14 +789,14 @@ let gen_metrics () =
     List.map (fun ((_sr, vdi) as sr_vdi, stats) ->
         let last_stats = match !sr_vdi_to_last_stats_values with
           | None -> None
-          | Some s -> if Hashtbl.mem s sr_vdi then Some (Hashtbl.find s sr_vdi) else None in
+          | Some s -> Hashtbl.find_opt s sr_vdi in
         let stats_blktap3, last_stats_blktap3 = get_stats_blktap3_by_vdi vdi in
         (sr_vdi, Stats_value.make stats last_stats stats_blktap3 last_stats_blktap3)
       ) sr_vdi_to_stats in
 
   (* sum up to SR level stats values *)
   let get_sr_to_stats_values ~stats_values ~accumulate =
-    let sr_to_stats_values = sr_to_sth stats_values in
+    let sr_to_stats_values = drop_vdis stats_values in
     List.map (fun (sr, stats_values) ->
         (sr, accumulate stats_values)
       ) sr_to_stats_values
@@ -810,12 +818,15 @@ let gen_metrics () =
     ) sr_to_stats_values in
 
   (* Get the blktap3 stats and iterate the stats list to count the
-     		number of tapdisks in low memory mode *)
+     number of tapdisks in low memory mode *)
   let data_sources_low_mem_mode =
     let (++) = Int64.add in
     let count = List.fold_left (fun acc ((_, _), stats) ->
-        if (Int64.logand (get_stats_flags stats) Blktap3_stats.flag_low_mem_mode) = Blktap3_stats.flag_low_mem_mode then acc ++ 1L else acc
-      )0L domid_devid_to_stats_blktap3
+      if (Int64.logand (get_stats_flags stats) Blktap3_stats.flag_low_mem_mode) = Blktap3_stats.flag_low_mem_mode then
+        acc ++ 1L
+      else
+        acc
+      ) 0L domid_devid_to_stats_blktap3
     in
     [[ Rrd.Host, Ds.ds_make ~name:"Tapdisks_in_low_memory_mode"
         ~description:("Number of tapdisks in low memory mode")
