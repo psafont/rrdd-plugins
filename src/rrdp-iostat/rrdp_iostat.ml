@@ -12,9 +12,10 @@
  * GNU Lesser General Public License for more details.
  *)
 
-open Xapi_stdext_std
-open Xapi_stdext_unix
-open Xapi_stdext_threads.Threadext
+module Listext = Xapi_stdext_std.Listext
+module Unixext = Xapi_stdext_unix.Unixext
+module Mutex = Xapi_stdext_threads.Threadext.Mutex
+module Pervasiveext = Xapi_stdext_pervasives.Pervasiveext
 
 open Rrdd_plugin
 open Blktap3_stats
@@ -22,9 +23,9 @@ open Blktap3_stats
 module Process = Process(struct let name="xcp-rrdd-iostat" end)
 open Process
 
-open Xenstore
+module Xs = Xenstore.Xs
 
-let with_xc_and_xs f = Xenctrl.with_intf (fun xc -> with_xs (fun xs -> f xc xs))
+let with_xc_and_xs f = Xenctrl.with_intf (fun xc -> Xs.with_xs (fun xs -> f xc xs))
 
 (* Return a list of (domid, uuid) pairs for domUs running on this host *)
 let get_running_domUs xc xs =
@@ -38,7 +39,7 @@ let get_running_domUs xc xs =
     let uuid_from_key key =
       let path = Printf.sprintf "/vm/%s/%s" uuid key in
       try
-        xs.read path
+        xs.Xs.read path
       with Xs_protocol.Enoent _hint ->
         D.info "Couldn't read path %s; falling back to actual uuid" path;
         uuid
@@ -73,7 +74,7 @@ let update_vdi_to_vm_map () =
     try
       let domUs = with_xc_and_xs get_running_domUs in
       D.debug "Running domUs: [%s]" (String.concat "; " (List.map (fun (domid, uuid) -> Printf.sprintf "%d (%s)" domid (String.sub uuid 0 8)) domUs));
-      with_xs (fun xs ->
+      Xenstore.with_xs (fun xs ->
           List.map (fun (domid, vm) ->
               (* Get VBDs for this domain *)
               let enoents = ref 0 in
@@ -81,7 +82,7 @@ let update_vdi_to_vm_map () =
                   try
                     let path = Printf.sprintf "%s/%d" base_path domid in
                     D.debug "Getting path %s..." path;
-                    Listext.List.filter_map (fun vbd ->
+                    List.filter_map (fun vbd ->
                         try
                           let devid = int_of_string vbd in
                           Some (Printf.sprintf "%s/%s" path vbd, devid)
@@ -97,7 +98,7 @@ let update_vdi_to_vm_map () =
 
               if !enoents = List.length base_paths then D.warn "Got ENOENT for each VBD backend path for domain %d" domid;
 
-              Listext.List.filter_map (fun (vbd, devid) ->
+              List.filter_map (fun (vbd, devid) ->
                   try
                     let vdi    = xs.Xs.read (Printf.sprintf "%s/sm-data/vdi-uuid" vbd) in
                     let device = xs.Xs.read (Printf.sprintf "%s/dev" vbd) in
@@ -160,7 +161,7 @@ module Iostat = struct
     let _ : 'a option list = Utils.exec_cmd (module Process.D) ~cmdstring ~f:process_line in
 
     (* Now read the values out of dev_values_map for devices for which we have data *)
-    Listext.List.filter_map (fun dev ->
+    List.filter_map (fun dev ->
         match Hashtbl.find_opt dev_values_map dev with
         | None -> None
         | Some values -> Some (dev, values)
@@ -399,7 +400,7 @@ module Blktap3_stats_wrapper = struct
   let get_stats () =
     let pid_from_xs (domid, devid) =
       try
-        let result = with_xs (fun xs ->
+        let result = Xenstore.with_xs (fun xs ->
             let path = Printf.sprintf "/local/domain/0/backend/vbd3/%d/%d/kthread-pid" domid devid in
             Some (int_of_string (xs.Xs.read path))) in
         result
