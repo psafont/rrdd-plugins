@@ -300,14 +300,12 @@ let exec_tap_ctl () =
     in
     (* Look up SR and VDI uuids from the physical path *)
     if not (Hashtbl.mem phypath_to_sr_vdi phypath) then refresh_phypath_to_sr_vdi ();
-    if not (Hashtbl.mem phypath_to_sr_vdi phypath) then
-      begin
+      match Hashtbl.find_opt phypath_to_sr_vdi phypath with
+      | None ->
         (* Odd: tap-ctl mentions a device that's not linked from /dev/sm/phy *)
         D.error "Could not find device with physical path %s" phypath;
         None
-      end
-    else
-      let (sr, vdi) = Hashtbl.find phypath_to_sr_vdi phypath in
+      | Some (sr, vdi) ->
       Some (pid, (minor, (sr, vdi)))
   in
   let process_line str =
