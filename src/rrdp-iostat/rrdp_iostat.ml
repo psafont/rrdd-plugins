@@ -292,7 +292,7 @@ let refresh_phypath_to_sr_vdi () =
   )
 
 let exec_tap_ctl () =
-  let tap_ctl = "/usr/sbin/tap-ctl list" in
+  let tap_ctl = "/usr/sbin/tap-ctl" in
   let extract_groups str =
     let pid = int_of_string (Str.matched_group 1 str)
     and minor = int_of_string (Str.matched_group 2 str)
@@ -320,7 +320,10 @@ let exec_tap_ctl () =
       end
     else extract_groups str
   in
-  let pid_and_minor_to_sr_and_vdi = Utils.exec_cmd (module Process.D) ~cmdstring:tap_ctl ~f:process_line in
+  let tap_out, _ = Forkhelpers.execute_command_get_output tap_ctl ["list"] in
+  let pid_and_minor_to_sr_and_vdi = tap_out
+        |> String.split_on_char '\n'
+        |> List.filter_map process_line in
   let minor_to_sr_and_vdi = List.map snd pid_and_minor_to_sr_and_vdi in
   begin
 
