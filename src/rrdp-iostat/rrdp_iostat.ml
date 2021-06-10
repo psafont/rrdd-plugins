@@ -26,12 +26,23 @@ open Xenstore
 
 let with_xc_and_xs f = Xenctrl.with_intf (fun xc -> with_xs (fun xs -> f xc xs))
 
+let string_of_domain_handle handle =
+  Array.to_list handle |> List.map string_of_int |> String.concat "; "
+
 (* Return a list of (domid, uuid) pairs for domUs running on this host *)
 let get_running_domUs xc xs =
   let metadata_of_domain di =
     let open Xenctrl in
     let domid = di.domid in
-    let uuid = Uuid.(to_string (uuid_of_int_array di.handle)) in
+    let uuid = match Uuid.of_int_array di.handle with
+    | None ->
+        D.error "Unable to extract uuid from domain %u, got %a" di.domid
+          (fun () -> string_of_domain_handle) di.handle ;
+        failwith (Printf.sprintf "Unable to extract uuid from domain %u, got %a"
+          di.domid (fun () -> string_of_domain_handle) di.handle)
+    | Some uuid ->
+        Uuid.to_string uuid
+    in
 
     (* Actively hide migrating VM uuids, these are temporary and xenops
        writes the original and the final uuid to xenstore *)
